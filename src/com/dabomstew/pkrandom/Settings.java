@@ -158,7 +158,7 @@ public class Settings {
     private boolean evolutionMovesForAll;
 
     public enum TrainersMod {
-        UNCHANGED, RANDOM, DISTRIBUTED, MAINPLAYTHROUGH, TYPE_THEMED, TYPE_THEMED_ELITE4_GYMS
+        UNCHANGED, RANDOM, DISTRIBUTED, MAINPLAYTHROUGH, TYPE_THEMED, FAITHFUL_TYPE_THEMED, TYPE_THEMED_ELITE4_GYMS
     }
 
     private TrainersMod trainersMod = TrainersMod.UNCHANGED;
@@ -192,7 +192,7 @@ public class Settings {
     private boolean betterTrainerMovesets;
 
     public enum WildPokemonMod {
-        UNCHANGED, RANDOM, AREA_MAPPING, GLOBAL_MAPPING
+        UNCHANGED, RANDOM, AREA_MAPPING, GLOBAL_MAPPING, FAITHFUL
     }
 
     public enum WildPokemonRestrictionMod {
@@ -408,6 +408,7 @@ public class Settings {
                 trainersMod == TrainersMod.DISTRIBUTED,
                 trainersMod == TrainersMod.MAINPLAYTHROUGH,
                 trainersMod == TrainersMod.TYPE_THEMED,
+                trainersMod == TrainersMod.FAITHFUL_TYPE_THEMED,
                 trainersMod == TrainersMod.TYPE_THEMED_ELITE4_GYMS));
         
         // 14 trainer pokemon force evolutions
@@ -424,7 +425,7 @@ public class Settings {
         // 16 wild pokemon 2
         out.write(makeByteSelected(useMinimumCatchRate, blockWildLegendaries,
                 wildPokemonRestrictionMod == WildPokemonRestrictionMod.SIMILAR_STRENGTH, randomizeWildPokemonHeldItems,
-                banBadRandomWildPokemonHeldItems, false, false, balanceShakingGrass));
+                banBadRandomWildPokemonHeldItems, wildPokemonMod == WildPokemonMod.FAITHFUL, false, balanceShakingGrass));
 
         // 17 static pokemon
         out.write(makeByteSelected(staticPokemonMod == StaticPokemonMod.UNCHANGED,
@@ -678,18 +679,22 @@ public class Settings {
                 2, // DISTRIBUTED
                 3, // MAINPLAYTHROUGH 
                 4, // TYPE_THEMED
-                5 // TYPE_THEMED_ELITE4_GYMS
+                5, // FAITHFUL_TYPE_THEMED
+                6 // TYPE_THEMED_ELITE4_GYMS
         ));
 
         settings.setTrainersForceFullyEvolved(restoreState(data[14], 7));
         settings.setTrainersForceFullyEvolvedLevel(data[14] & 0x7F);
 
-        settings.setWildPokemonMod(restoreEnum(WildPokemonMod.class, data[15], 6, // UNCHANGED
-                5, // RANDOM
-                1, // AREA_MAPPING
-                4 // GLOBAL_MAPPING
+        settings.setWildPokemonMod(getEnum(WildPokemonMod.class,
+                restoreState(data[15], 6), // UNCHANGED
+                restoreState(data[15], 5), // RANDOM
+                restoreState(data[15], 1), // AREA_MAPPING
+                restoreState(data[15], 4), // GLOBAL_MAPPING
+                restoreState(data[16], 5) // FAITHFUL
         ));
-        settings.setWildPokemonRestrictionMod(getEnum(WildPokemonRestrictionMod.class, restoreState(data[15], 2), // NONE
+        settings.setWildPokemonRestrictionMod(getEnum(WildPokemonRestrictionMod.class,
+                restoreState(data[15], 2), // NONE
                 restoreState(data[16], 2), // SIMILAR_STRENGTH
                 restoreState(data[15], 0), // CATCH_EM_ALL
                 restoreState(data[15], 3) // TYPE_THEME_AREAS

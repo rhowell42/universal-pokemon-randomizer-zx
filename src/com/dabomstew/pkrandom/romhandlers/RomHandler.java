@@ -219,6 +219,8 @@ public interface RomHandler {
 
     void randomEncounters(Settings settings);
 
+    void faithfulRandomEncounters(Settings settings);
+
     void area1to1Encounters(Settings settings);
 
     void game1to1Encounters(Settings settings);

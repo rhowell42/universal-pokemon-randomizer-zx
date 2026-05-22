@@ -453,6 +453,7 @@ public class Randomizer {
             case DISTRIBUTED:
             case MAINPLAYTHROUGH:
             case TYPE_THEMED:
+            case FAITHFUL_TYPE_THEMED:
             case TYPE_THEMED_ELITE4_GYMS:
                 romHandler.randomizeTrainerPokes(settings);
                 trainersChanged = true;
@@ -583,6 +584,10 @@ public class Randomizer {
                 break;
             case GLOBAL_MAPPING:
                 romHandler.game1to1Encounters(settings);
+                wildsChanged = true;
+                break;
+            case FAITHFUL:
+                romHandler.faithfulRandomEncounters(settings);
                 wildsChanged = true;
                 break;
             default:

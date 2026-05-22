@@ -54,6 +54,7 @@ public abstract class AbstractRomHandler implements RomHandler {
     private List<Pokemon> alreadyPicked = new ArrayList<>();
     private Map<Pokemon, Integer> placementHistory = new HashMap<>();
     private Map<Integer, Integer> itemPlacementHistory = new HashMap<>();
+    private Map<Type, List<Pokemon>> typedPokemonMap = new HashMap<>();
     private int fullyEvolvedRandomSeed;
     boolean isORAS = false;
     boolean isSM = false;
@@ -153,6 +154,12 @@ public abstract class AbstractRomHandler implements RomHandler {
         ultraBeastList = new ArrayList<>();
 
         for (Pokemon p : mainPokemonList) {
+            // Fill the typed pokemon maps based on the pokemons primary and secondary types, if
+            // it exists.
+            typedPokemonMap.computeIfAbsent(p.primaryType, k -> new ArrayList<>()).add(p);
+            if (p.secondaryType != null) {
+                typedPokemonMap.computeIfAbsent(p.secondaryType, k -> new ArrayList<>()).add(p);
+            }
             if (p.isLegendary()) {
                 onlyLegendaryList.add(p);
             } else if (p.isUltraBeast()) {
@@ -910,6 +917,216 @@ public abstract class AbstractRomHandler implements RomHandler {
     }
 
     @Override
+    public void faithfulRandomEncounters(Settings settings) {
+        boolean useTimeOfDay = settings.isUseTimeBasedEncounters();
+        boolean catchEmAll = settings.getWildPokemonRestrictionMod() == Settings.WildPokemonRestrictionMod.CATCH_EM_ALL;
+        boolean usePowerLevels = settings.getWildPokemonRestrictionMod() == Settings.WildPokemonRestrictionMod.SIMILAR_STRENGTH;
+        boolean noLegendaries = settings.isBlockWildLegendaries();
+        boolean balanceShakingGrass = settings.isBalanceShakingGrass();
+        int levelModifier = settings.isWildLevelsModified() ? settings.getWildLevelModifier() : 0;
+        boolean allowAltFormes = settings.isAllowWildAltFormes();
+        boolean banIrregularAltFormes = settings.isBanIrregularAltFormes();
+        boolean abilitiesAreRandomized = settings.getAbilitiesMod() == Settings.AbilitiesMod.RANDOMIZE;
+
+        List<EncounterSet> currentEncounters = this.getEncounters(useTimeOfDay);
+
+        if (isORAS) {
+            List<EncounterSet> collapsedEncounters = collapseAreasORAS(currentEncounters);
+            area1to1EncountersImpl(collapsedEncounters, settings);
+            enhanceRandomEncountersORAS(collapsedEncounters, settings);
+            setEncounters(useTimeOfDay, currentEncounters);
+            return;
+        }
+
+        checkPokemonRestrictions();
+
+        List<Pokemon> banned = this.bannedForWildEncounters();
+        banned.addAll(this.getBannedFormesForPlayerPokemon());
+        if (!abilitiesAreRandomized) {
+            List<Pokemon> abilityDependentFormes = getAbilityDependentFormes();
+            banned.addAll(abilityDependentFormes);
+        }
+        if (banIrregularAltFormes) {
+            banned.addAll(getIrregularFormes());
+        }
+        // Assume EITHER catch em all OR type themed OR match strength for now
+        if (catchEmAll) {
+            HashMap<Type, List<Pokemon>> pokeMap = new HashMap<Type, List<Pokemon>>(typedPokemonMap);
+            pokeMap.forEach((type, pokeList) -> {
+                if (allowAltFormes) {
+                    pokeList = noLegendaries ? new ArrayList<>(noLegendaryListInclFormes) : new ArrayList<>(
+                            mainPokemonListInclFormes);
+                    pokeList.removeIf(o -> ((Pokemon) o).actuallyCosmetic);
+                } else {
+                    pokeList = noLegendaries ? new ArrayList<>(noLegendaryList) : new ArrayList<>(
+                            mainPokemonList);
+                }
+                pokeList.removeAll(banned);
+            });
+
+            for (EncounterSet area : currentEncounters) {
+                HashMap<Type, List<Pokemon>> pickablePokemon = new HashMap<Type, List<Pokemon>>(pokeMap);
+                pickablePokemon.forEach((type, pokeList) -> {
+                    if (!area.bannedPokemon.isEmpty()) {
+                        pokeList.removeAll(area.bannedPokemon);
+                    }
+                });
+
+                for (Encounter enc : area.encounters) {
+                    // In Catch 'Em All mode, don't randomize encounters for Pokemon that are banned for
+                    // wild encounters. Otherwise, it may be impossible to obtain this Pokemon unless it
+                    // randomly appears as a static or unless it becomes a random evolution.
+                    if (banned.contains(enc.pokemon)) {
+                        continue;
+                    }
+
+                    Type type1 = enc.pokemon.primaryType;
+                    Type type2 = enc.pokemon.secondaryType;
+                    Type typeToUse;
+                    int typeChoice = this.random.nextInt(2);
+                    if (!pickablePokemon.get(type2).isEmpty() && typeChoice == 1) {
+                        typeToUse = type2;
+                    } else {
+                        typeToUse = type1;
+                    }
+
+                    if (pickablePokemon.get(type1).isEmpty() && (type2 == null || (type2 != null && pickablePokemon.get(type2).isEmpty())) ) {
+                        // Only banned pokes are left, ignore them and pick
+                        // something else for now.
+                        List<Pokemon> tempPickable;
+                        if (allowAltFormes) {
+                            tempPickable = noLegendaries ? new ArrayList<>(noLegendaryListInclFormes) : new ArrayList<>(
+                                    mainPokemonListInclFormes);
+                            tempPickable.removeIf(o -> ((Pokemon) o).actuallyCosmetic);
+                        } else {
+                            tempPickable = noLegendaries ? new ArrayList<>(noLegendaryList) : new ArrayList<>(
+                                    mainPokemonList);
+                        }
+                        tempPickable.removeAll(banned);
+                        tempPickable.removeAll(area.bannedPokemon);
+                        if (tempPickable.size() == 0) {
+                            throw new RandomizationException("ERROR: Couldn't replace a wild Pokemon!");
+                        }
+                        int picked = this.random.nextInt(tempPickable.size());
+                        enc.pokemon = tempPickable.get(picked);
+                        setFormeForEncounter(enc, enc.pokemon);
+                    } else {
+                        Pokemon randomPokemon = pickablePokemon.get(typeToUse).get(this.random.nextInt(pickablePokemon.get(typeToUse).size()));
+
+                        // Picked this Pokemon, remove it
+                        enc.pokemon = randomPokemon;
+                        pickablePokemon.get(typeToUse).remove(randomPokemon);
+                        if (pokeMap.get(typeToUse) != pickablePokemon.get(typeToUse)) {
+                            pokeMap.get(typeToUse).remove(enc.pokemon);
+                        }
+                        setFormeForEncounter(enc, enc.pokemon);
+                        if (pokeMap.get(typeToUse).isEmpty()) {
+                            // Start again
+                            if (allowAltFormes) {
+                                pokeMap.get(typeToUse).addAll(noLegendaries ? noLegendaryListInclFormes : mainPokemonListInclFormes);
+                                pokeMap.get(typeToUse).removeIf(o -> ((Pokemon) o).actuallyCosmetic);
+                            } else {
+                                pokeMap.get(typeToUse).addAll(noLegendaries ? noLegendaryList : mainPokemonList);
+                            }
+                            pokeMap.get(typeToUse).removeAll(banned);
+                            if (pokeMap.get(typeToUse) != pickablePokemon.get(typeToUse)) {
+                                pickablePokemon.get(typeToUse).addAll(pokeMap.get(typeToUse));
+                                pickablePokemon.get(typeToUse).removeAll(area.bannedPokemon);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (usePowerLevels) {
+            HashMap<Type, List<Pokemon>> pokeMap = new HashMap<Type, List<Pokemon>>(typedPokemonMap);
+            pokeMap.forEach((type, pokeList) -> {
+                if (allowAltFormes) {
+                    pokeList = noLegendaries ? new ArrayList<>(noLegendaryListInclFormes) : new ArrayList<>(
+                            mainPokemonListInclFormes);
+                    pokeList.removeIf(o -> ((Pokemon) o).actuallyCosmetic);
+                } else {
+                    pokeList = noLegendaries ? new ArrayList<>(noLegendaryList) : new ArrayList<>(
+                            mainPokemonList);
+                }
+                pokeList.removeAll(banned);
+            });
+            for (EncounterSet area : currentEncounters) {
+                HashMap<Type, List<Pokemon>> pickablePokemon = new HashMap<Type, List<Pokemon>>(pokeMap);
+                pickablePokemon.forEach((type, pokeList) -> {
+                    if (!area.bannedPokemon.isEmpty()) {
+                        pokeList.removeAll(area.bannedPokemon);
+                    }
+                });
+                for (Encounter enc : area.encounters) {
+                    Type type1 = enc.pokemon.primaryType;
+                    Type type2 = enc.pokemon.secondaryType;
+                    Type typeToUse;
+                    int typeChoice = this.random.nextInt(2);
+
+                    if (type2 != null && !pickablePokemon.get(type2).isEmpty() && typeChoice == 1) {
+                        typeToUse = type2;
+                    } else {
+                        typeToUse = type1;
+                    }
+
+                    List<Pokemon> localAllowed = pickablePokemon.get(typeToUse);
+
+                    if (balanceShakingGrass) {
+                        if (area.displayName.contains("Shaking")) {
+                            enc.pokemon = pickWildPowerLvlReplacement(localAllowed, enc.pokemon, false, null, (enc.level + enc.maxLevel) / 2);
+                            while (enc.pokemon.actuallyCosmetic) {
+                                enc.pokemon = pickWildPowerLvlReplacement(localAllowed, enc.pokemon, false, null, (enc.level + enc.maxLevel) / 2);
+                            }
+                            setFormeForEncounter(enc, enc.pokemon);
+                        } else {
+                            enc.pokemon = pickWildPowerLvlReplacement(localAllowed, enc.pokemon, false, null, 100);
+                            while (enc.pokemon.actuallyCosmetic) {
+                                enc.pokemon = pickWildPowerLvlReplacement(localAllowed, enc.pokemon, false, null, 100);
+                            }
+                            setFormeForEncounter(enc, enc.pokemon);
+                        }
+                    } else {
+                        enc.pokemon = pickWildPowerLvlReplacement(localAllowed, enc.pokemon, false, null, 100);
+                        while (enc.pokemon.actuallyCosmetic) {
+                            enc.pokemon = pickWildPowerLvlReplacement(localAllowed, enc.pokemon, false, null, 100);
+                        }
+                        setFormeForEncounter(enc, enc.pokemon);
+                    }
+                }
+            }
+        } else {
+            // Entirely random
+            for (EncounterSet area : currentEncounters) {
+                for (Encounter enc : area.encounters) {
+                    Type type1 = enc.pokemon.primaryType;
+                    Type type2 = enc.pokemon.secondaryType;
+                    Type typeToUse;
+                    int typeChoice = this.random.nextInt(2);
+
+                    if (type2 != null && !typedPokemonMap.get(type2).isEmpty() && typeChoice == 1) {
+                        typeToUse = type2;
+                    } else {
+                        typeToUse = type1;
+                    }
+                    enc.pokemon = typedPokemonMap.get(typeToUse).get(this.random.nextInt(typedPokemonMap.get(typeToUse).size()));
+                    setFormeForEncounter(enc, enc.pokemon);
+                }
+            }
+        }
+        if (levelModifier != 0) {
+            for (EncounterSet area : currentEncounters) {
+                for (Encounter enc : area.encounters) {
+                    enc.level = Math.min(100, (int) Math.round(enc.level * (1 + levelModifier / 100.0)));
+                    enc.maxLevel = Math.min(100, (int) Math.round(enc.maxLevel * (1 + levelModifier / 100.0)));
+                }
+            }
+        }
+
+        setEncounters(useTimeOfDay, currentEncounters);
+    }
+
+
+    @Override
     public void area1to1Encounters(Settings settings) {
         boolean useTimeOfDay = settings.isUseTimeBasedEncounters();
 
@@ -1661,6 +1878,7 @@ public abstract class AbstractRomHandler implements RomHandler {
         boolean noEarlyWonderGuard = settings.isTrainersBlockEarlyWonderGuard();
         int levelModifier = settings.isTrainersLevelModified() ? settings.getTrainersLevelModifier() : 0;
         boolean isTypeThemed = settings.getTrainersMod() == Settings.TrainersMod.TYPE_THEMED;
+        boolean isFaithfulTypeThemed = settings.getTrainersMod() == Settings.TrainersMod.FAITHFUL_TYPE_THEMED;
         boolean isTypeThemedEliteFourGymOnly = settings.getTrainersMod() == Settings.TrainersMod.TYPE_THEMED_ELITE4_GYMS;
         boolean distributionSetting = settings.getTrainersMod() == Settings.TrainersMod.DISTRIBUTED;
         boolean mainPlaythroughSetting = settings.getTrainersMod() == Settings.TrainersMod.MAINPLAYTHROUGH;
@@ -1709,7 +1927,7 @@ public abstract class AbstractRomHandler implements RomHandler {
         // Type Themed related
         Map<Trainer, Type> trainerTypes = new TreeMap<>();
         Set<Type> usedUberTypes = new TreeSet<>();
-        if (isTypeThemed || isTypeThemedEliteFourGymOnly) {
+        if (isTypeThemed || isTypeThemedEliteFourGymOnly || isFaithfulTypeThemed) {
             typeWeightings = new TreeMap<>();
             totalTypeWeighting = 0;
             // Construct groupings for types
@@ -1750,23 +1968,31 @@ public abstract class AbstractRomHandler implements RomHandler {
                 List<Trainer> trainersInGroup = groups.get(group);
                 // Shuffle ordering within group to promote randomness
                 Collections.shuffle(trainersInGroup, random);
-                Type typeForGroup = pickType(weightByFrequency, noLegendaries, includeFormes);
-                if (group.startsWith("GYM")) {
-                    while (usedGymTypes.contains(typeForGroup)) {
-                        typeForGroup = pickType(weightByFrequency, noLegendaries, includeFormes);
-                    }
-                    usedGymTypes.add(typeForGroup);
-                }
-                if (group.startsWith("ELITE")) {
-                    while (usedEliteTypes.contains(typeForGroup)) {
-                        typeForGroup = pickType(weightByFrequency, noLegendaries, includeFormes);
-                    }
-                    usedEliteTypes.add(typeForGroup);
-                }
-                if (group.equals("CHAMPION")) {
-                    usedUberTypes.add(typeForGroup);
+
+                Type typeForGroup;
+                if (!isFaithfulTypeThemed) {
+                    typeForGroup = pickType(weightByFrequency, noLegendaries, includeFormes);
+                } else {
+                    typeForGroup = getTypeFromGroup(trainersInGroup);
                 }
 
+                if (!isFaithfulTypeThemed) {
+                    if (group.startsWith("GYM")) {
+                        while (usedGymTypes.contains(typeForGroup)) {
+                            typeForGroup = pickType(weightByFrequency, noLegendaries, includeFormes);
+                        }
+                        usedGymTypes.add(typeForGroup);
+                    }
+                    if (group.startsWith("ELITE")) {
+                        while (usedEliteTypes.contains(typeForGroup)) {
+                            typeForGroup = pickType(weightByFrequency, noLegendaries, includeFormes);
+                        }
+                        usedEliteTypes.add(typeForGroup);
+                    }
+                    if (group.equals("CHAMPION")) {
+                        usedUberTypes.add(typeForGroup);
+                    }
+                }
                 for (Trainer t : trainersInGroup) {
                     trainerTypes.put(t, typeForGroup);
                 }
@@ -1777,8 +2003,9 @@ public abstract class AbstractRomHandler implements RomHandler {
         // Leads to less predictable results for various modifiers.
         // Need to keep the original ordering around for saving though.
         List<Trainer> scrambledTrainers = new ArrayList<>(currentTrainers);
-        Collections.shuffle(scrambledTrainers, this.random);
-
+        if (!isFaithfulTypeThemed) {
+            Collections.shuffle(scrambledTrainers, this.random);
+        }
         // Elite Four Unique Pokemon related
         boolean eliteFourUniquePokemon = eliteFourUniquePokemonNumber > 0;
         List<Pokemon> illegalIfEvolvedList = new ArrayList<>();
@@ -1826,6 +2053,15 @@ public abstract class AbstractRomHandler implements RomHandler {
             Type typeForTrainer = trainerTypes.get(t);
             if (typeForTrainer == null && isTypeThemed) {
                 typeForTrainer = pickType(weightByFrequency, noLegendaries, includeFormes);
+                // Ubers: can't have the same type as each other
+                if (t.tag != null && t.tag.equals("UBER")) {
+                    while (usedUberTypes.contains(typeForTrainer)) {
+                        typeForTrainer = pickType(weightByFrequency, noLegendaries, includeFormes);
+                    }
+                    usedUberTypes.add(typeForTrainer);
+                }
+            } else if (typeForTrainer == null && isFaithfulTypeThemed) {
+                typeForTrainer = getTypeFromGroup(Collections.singletonList(t));
                 // Ubers: can't have the same type as each other
                 if (t.tag != null && t.tag.equals("UBER")) {
                     while (usedUberTypes.contains(typeForTrainer)) {
@@ -6514,6 +6750,31 @@ public abstract class AbstractRomHandler implements RomHandler {
 
     private Map<Type, Integer> typeWeightings;
     private int totalTypeWeighting;
+
+    private Type getTypeFromGroup(List<Trainer> trainersInGroup){
+        Map<Type, Integer> typeOccurences = new HashMap<>();
+
+        for (Trainer t : trainersInGroup) {
+            for (TrainerPokemon p : t.pokemon) {
+                Type primaryType = p.pokemon.primaryType;
+                Type secondaryType = p.pokemon.secondaryType;
+                typeOccurences.merge(primaryType, 1, Integer::sum);
+                if (secondaryType != null) {
+                    typeOccurences.merge(secondaryType, 1, Integer::sum);
+                }
+            }
+        }
+
+        Map.Entry<Type, Integer> maxEntry = null;
+        for (Map.Entry<Type, Integer> entry : typeOccurences.entrySet())
+        {
+            if (maxEntry == null || entry.getValue().compareTo(maxEntry.getValue()) > 0)
+            {
+                maxEntry = entry;
+            }
+        }
+        return maxEntry.getKey();
+    }
 
     private Type pickType(boolean weightByFrequency, boolean noLegendaries, boolean allowAltFormes) {
         if (totalTypeWeighting == 0) {
